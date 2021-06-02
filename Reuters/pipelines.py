@@ -9,5 +9,7 @@ from itemadapter import ItemAdapter
 
 
 class ReutersPipeline:
+    outputs = []
     def process_item(self, item, spider):
+        self.outputs.append(item)
         return item
