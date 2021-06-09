@@ -9,80 +9,85 @@ class Scraper(scrapy.Spider):
     name = 'idk'
     baseurl = 'https://www.reuters.com'
     # using pandas dataframe to load list of company names
-    company_list = pd.read_csv('C:\Dev\ScrapyProject\CompanyData.csv', usecols=[0])
-    # Clean data as required to obtain company names in a format suitable for query strings in search url (aviva%20%plc, or royal%20mail%20%plc)
-
-    # data cleaning used for a different csv file
-    # company_list['Company Names'] = company_list['Company Names'].str.lower()
-    # company_list['Company Names'] = company_list['Company Names'].str.replace(" ", "%20")
-
-    new = company_list['companyname'].str.split(",", n=1, expand=True)
-    company_list['companyname'] = new[0]
-    company_list['companyname'] = company_list['companyname'].str.replace('"', '')
-    company_list['search'] = company_list['companyname'].str.lower()
-    company_list['search'] = company_list['search'].str.replace(" ", "%20")
-    scrape_urls = []
-    # Iterate over every company name in the list to form search urls to use as the scraper's start urls
-    for company in company_list['search']:
-        scrape_urls.append('https://www.reuters.com/finance/stocks/lookup?search=' + company + '&searchType=any')
-
-    start_urls = scrape_urls
+    companies = pd.read_csv(
+        'C:\Dev\ScrapyProject\Reuters\wikipedia_data_of_accounts.csv',
+        header=None,
+        delimiter='|',
+        usecols=[0, 1, 3, 4],
+        names=['account', 'company_name', 'exchange_board', 'company_abb']
+    )
+    # load Reuters RIC Equity Suffix from a JL file
+    # using JL file instead of JSON coz scrapy outputs JSON format with array wrappers so json.load(handle) doesn't work
+    with open('C:\Dev\ScrapyProject\Reuters\Reuters\\reuter_data_provider.jl') as handle:
+        data_providers = json.load(handle)
     rows_list = []
-    # Parse is iterated over all start urls. Search for company names and pick first entry of search result
+
+    # instead of using start_urls, define start_requests function and iterate over accounts from csv file
+    def start_requests(self):
+        for row in self.companies.itertuples():
+            company_abbreviation = str(getattr(row, 'company_abb'))
+            company_abbreviation = company_abbreviation.split(".")[0]
+            exchange_board = getattr(row, 'exchange_board')
+            # generate URL if exchange_board is present in data providers list
+            if exchange_board in self.data_providers.keys():
+                suffix = self.data_providers[exchange_board]
+                url = self.baseurl + '/companies/' + company_abbreviation + suffix
+                print(getattr(row, 'company_name'))
+                yield scrapy.Request(
+                    url,
+                    callback=self.parse_primary_details,
+                    errback=self.parse_error,
+                    cb_kwargs=dict(cname=getattr(row, 'company_name'), account=getattr(row, 'account'))
+                )
+            else:
+                account = getattr(row, 'account')
+                cname = getattr(row, 'company_name')
+                self.rows_list.append({'account': account, 'company_name': cname})
 
     # function is executed after the spider closes. Scraped data stored in rows_list array is converted to
     # pandas dataframe and saved in CSV format with "|" delimiter
     def close(self, reason):
         df = pd.DataFrame(self.rows_list)
-        df.reset_index().to_csv('Outputs.csv', index=False, sep="|")
-
-    # Function takes start_urls as input. start_urls are search urls for company names. Should receive urls
-    # from google scraper down the line to avoid using Reuters' search engine
-    # If search results are present, the function scrapes for the URL of first SERP result and yields company's
-    # detail page with parse_primary_details() function as callback function
-    def parse(self, response, **kwargs):
-        company_name = response.request.url.split("=")[1]
-        company_name = company_name.split("&")[0]
-        company_name = company_name.replace("%20", " ")
-        company_name = company_name.upper()
-        company_page_link = response.css("tr.stripe::attr(onclick)").extract_first()
-        # if search result entry exists, generate company page url
-        if company_page_link is not None:
-            next_url = self.baseurl + company_page_link.split("'")[1]
-            yield response.follow(
-                next_url,
-                callback= self.parse_primary_details,
-                cb_kwargs=dict(cname=company_name),
-                errback=self.parse_error
-            )
-        else:
-            self.rows_list.append({'company_name': company_name})
+        df.reset_index().to_csv('OutputsCommaSeparated.csv', index=False, sep=",")
 
     # Handles error if HTTP code 200 is not encountered
-
     def parse_error(self, failure):
         if failure.value.response != 200:
-            self.rows_list.append({'company_name': failure.request.cb_kwargs['cname']})
+            self.rows_list.append({
+                'account': failure.request.cb_kwargs['account'],
+                'company_name': failure.request.cb_kwargs['cname']
+            })
 
     # Collects data from company primary page(address, phone number, and primary domain)
     # Yields /financials page to parse financials table with parse_income_statement() function as callback
 
-    def parse_primary_details(self, response, cname):
+    def parse_primary_details(self, response, cname, account):
+        account = account
         company_name = cname
         company_address = response.css("div.About-address-AiNm9 > p.About-value-3oDGk::text").extract()
         company_ph = response.css("p.About-phone-2No5Q::text").extract()
         company_primary_domain = response.css("a.website::attr(href)").get()
-        details = {
-            'company_name': company_name,
-            'company_address': company_address,
-            'company_ph': company_ph,
-            'company_primary_domain': company_primary_domain
-        }
-        next_url = response.request.url + '/financials'
-        # Pass the scraped data along to next function as request meta data
-        # the next function will scrape /financials page of each company to recover revenue and operating income
-        # repeat the same until you reach the last function that scrapes for employee data
-        yield response.follow(next_url, meta={'details': details}, callback=self.parse_income_statement)
+        if company_primary_domain is not None:
+            details = {
+                'account': account,
+                'company_name': company_name,
+                'company_address': company_address,
+                'company_ph': company_ph,
+                'company_primary_domain': company_primary_domain
+            }
+            # Pass the scraped data along to next function as request meta data
+            # the next function will scrape /financials page of each company to recover revenue and operating income
+            # repeat the same until you reach the last function that scrapes for employee data
+            next_url = response.request.url + '/financials'
+            yield response.follow(next_url, meta={'details': details}, callback=self.parse_income_statement)
+
+        # handling 404 error. In some cases, scrapy gives 200 HTTP response but 404 error is encountered
+        # self.parse_error doesn't handle it because scrapy recognizes it as error free response so it is handled here
+        else:
+            self.rows_list.append({
+                'account': account,
+                'company_name': company_name
+            })
 
     # Collects financials data from table(net income, company revenue, and operating income)
     # yields balance sheet page (/financials/balance-sheet-annual) with parse_balance_sheet() function as callback
