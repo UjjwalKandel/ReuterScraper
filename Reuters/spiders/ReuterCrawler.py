@@ -48,7 +48,7 @@ class Scraper(scrapy.Spider):
     # pandas dataframe and saved in CSV format with "|" delimiter
     def close(self, reason):
         df = pd.DataFrame(self.rows_list)
-        df.reset_index().to_csv('OutputsCommaSeparated.csv', index=False, sep=",")
+        df.reset_index().to_csv('Outputs.csv', index=False, sep="|")
 
     # Handles error if HTTP code 200 is not encountered
     def parse_error(self, failure):
